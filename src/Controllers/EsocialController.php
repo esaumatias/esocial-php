@@ -115,40 +115,19 @@ class EsocialController
             $cnpjOriginalCompleto = preg_replace('/\D/', '', $this->config['empregador']['nrInsc']);
 
             // Formatar CNPJ na configuração se for S-1000
+            // REGRA OFICIAL: Para tpInsc = 1 (CNPJ), SEMPRE usar apenas a raiz do CNPJ (8 dígitos)
             if (($eventoData['tipo'] ?? '') === 'S-1000' && isset($eventoData['dados']['ideEmpregador']['tpInsc']) && $eventoData['dados']['ideEmpregador']['tpInsc'] == 1) {
                 $dados = $eventoData['dados'] ?? [];
                 if (isset($dados['ideEmpregador']['nrInsc']) && !empty($dados['ideEmpregador']['nrInsc'])) {
                     $cnpj = preg_replace('/\D/', '', (string)$dados['ideEmpregador']['nrInsc']);
-                    $classtrib = isset($dados['infocadastro']['classtrib']) ? (string)$dados['infocadastro']['classtrib'] : '';
-                    
-                    // Códigos de classificação tributária para órgãos públicos
-                    $codigosOrgaoPublico = ['21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33'];
-                    $isOrgaoPublico = in_array($classtrib, $codigosOrgaoPublico);
-                    
                     $cnpjLength = strlen($cnpj);
                     
-                    // Formatar CNPJ para a configuração do Tools também (mesma lógica do evento)
-                    // SEMPRE formatar: órgão público precisa ter exatamente 14 dígitos, outros precisam ter exatamente 8
-                    if ($isOrgaoPublico) {
-                        // Órgão público: garantir que tenha exatamente 14 dígitos
-                        if ($cnpjLength == 14) {
-                            $cnpjFormatado = $cnpj;
-                        } else if ($cnpjLength > 14) {
-                            // Se tiver mais de 14, pegar os primeiros 14
-                            $cnpjFormatado = substr($cnpj, 0, 14);
-                        } else {
-                            // Se tiver menos de 14, preencher com zeros à esquerda
-                            $cnpjFormatado = str_pad($cnpj, 14, '0', STR_PAD_LEFT);
-                        }
-                    } else {
-                        // Para todos os outros casos (empresas privadas), SEMPRE usar apenas CNPJ base (8 dígitos)
-                        // Independente se o CNPJ original tem 14 dígitos ou não
-                        $cnpjFormatado = $cnpjLength >= 8 ? substr($cnpj, 0, 8) : str_pad($cnpj, 8, '0', STR_PAD_LEFT);
-                    }
+                    // Sempre usar apenas a raiz do CNPJ (8 dígitos) para tpInsc = 1
+                    $cnpjFormatado = $cnpjLength >= 8 ? substr($cnpj, 0, 8) : str_pad($cnpj, 8, '0', STR_PAD_LEFT);
                     
                     // Atualizar CNPJ na configuração para usar o mesmo formato do evento
                     $this->config['empregador']['nrInsc'] = $cnpjFormatado;
-                    error_log("S-1000: CNPJ da configuração atualizado para: {$cnpjFormatado} (tamanho: " . strlen($cnpjFormatado) . ", é órgão público: " . ($isOrgaoPublico ? 'Sim' : 'Não') . ")");
+                    error_log("S-1000: CNPJ da configuração atualizado para: {$cnpjFormatado} (8 dígitos - raiz do CNPJ)");
                 }
             }
             
@@ -373,6 +352,19 @@ class EsocialController
             // Determinar tipo de inscrição do transmissor (CNPJ = 1, CPF = 2)
             $transmissorTpInsc = strlen($certificateCNPJ) == 14 ? 1 : (strlen($certificateCNPJ) == 11 ? 2 : 1);
             
+            // Garantir que o CNPJ do empregador na configuração seja sempre 8 dígitos (raiz do CNPJ)
+            $empregadorNrInsc = $this->config['empregador']['nrInsc'] ?? '';
+            $empregadorNrInscOriginal = $empregadorNrInsc;
+            if (!empty($empregadorNrInsc) && ($this->config['empregador']['tpInsc'] ?? 1) == 1) {
+                $empregadorNrInsc = preg_replace('/\D/', '', (string)$empregadorNrInsc);
+                if (strlen($empregadorNrInsc) >= 8) {
+                    $empregadorNrInsc = substr($empregadorNrInsc, 0, 8);
+                } else {
+                    $empregadorNrInsc = str_pad($empregadorNrInsc, 8, '0', STR_PAD_LEFT);
+                }
+                error_log("🔧 INITIALIZE TOOLS: CNPJ do empregador formatado de '{$empregadorNrInscOriginal}' para '{$empregadorNrInsc}' (8 dígitos)");
+            }
+            
             $configArray = [
                 'tpAmb' => $this->config['tpAmb'] ?? 2,
                 'verProc' => $this->config['verProc'] ?? 'SISTEMA-RH-1.0',
@@ -380,12 +372,12 @@ class EsocialController
                 'serviceVersion' => $this->config['serviceVersion'] ?? '1.5.0',
                 'empregador' => [
                     'tpInsc' => $this->config['empregador']['tpInsc'] ?? 1,
-                    'nrInsc' => $this->config['empregador']['nrInsc'] ?? '',
+                    'nrInsc' => $empregadorNrInsc, // Sempre usar apenas a raiz do CNPJ (8 dígitos)
                     'nmRazao' => $this->config['empregador']['nmRazao'] ?? 'Empresa',
                 ],
                 'transmissor' => [
                     'tpInsc' => $transmissorTpInsc,
-                    'nrInsc' => $certificateCNPJ, // Usar CNPJ completo do certificado
+                    'nrInsc' => $certificateCNPJ, // Transmissor usa CNPJ completo do certificado
                 ]
             ];
 
@@ -407,6 +399,26 @@ class EsocialController
         $tipo = $eventoData['tipo'] ?? '';
         $dados = $eventoData['dados'] ?? [];
 
+        // IMPORTANTE: Formatar CNPJ do empregador para TODOS os eventos
+        // REGRA OFICIAL: Para tpInsc = 1 (CNPJ), SEMPRE usar apenas a raiz do CNPJ (8 dígitos)
+        // O eSocial identifica o estabelecimento completo pelo evento S-1005, não pelo CNPJ completo
+        if (isset($dados['ideEmpregador']['tpInsc']) && $dados['ideEmpregador']['tpInsc'] == 1 && isset($dados['ideEmpregador']['nrInsc'])) {
+            $cnpj = preg_replace('/\D/', '', (string)$dados['ideEmpregador']['nrInsc']);
+            $cnpjLength = strlen($cnpj);
+            
+            // Sempre usar apenas a raiz do CNPJ (8 dígitos) para tpInsc = 1
+            if ($cnpjLength >= 8) {
+                $dados['ideEmpregador']['nrInsc'] = substr($cnpj, 0, 8);
+            } else {
+                $dados['ideEmpregador']['nrInsc'] = str_pad($cnpj, 8, '0', STR_PAD_LEFT);
+            }
+            
+            error_log("✅ {$tipo}: CNPJ formatado para 8 dígitos (raiz do CNPJ). Original: {$cnpj} ({$cnpjLength} dígitos), Formatado: " . $dados['ideEmpregador']['nrInsc']);
+            
+            // Garantir que seja string
+            $dados['ideEmpregador']['nrInsc'] = (string)$dados['ideEmpregador']['nrInsc'];
+        }
+
         // Debug: log dos dados recebidos
         if ($tipo === 'S-1000') {
             error_log("S-1000: Dados recebidos - " . json_encode($dados, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
@@ -414,6 +426,11 @@ class EsocialController
             // Garantir que infocadastro existe
             if (!isset($dados['infocadastro']) || !is_array($dados['infocadastro'])) {
                 $dados['infocadastro'] = [];
+            }
+            
+            // Garantir que ideperiodo existe
+            if (!isset($dados['ideperiodo']) || !is_array($dados['ideperiodo'])) {
+                $dados['ideperiodo'] = [];
             }
             
             // Validar campo obrigatório classtrib (classTrib)
@@ -429,6 +446,273 @@ class EsocialController
             
             // Garantir que o campo esteja no formato correto
             $dados['infocadastro']['classtrib'] = $classtrib;
+            
+            // Validar campo obrigatório inivalid (início da validade) - formato AAAA-MM
+            // O inivalid deve estar em ideperiodo.inivalid (estrutura correta do eSocial)
+            // Mas também verificamos infocadastro.inivalid para compatibilidade com versões antigas
+            $inivalid = null;
+            
+            // Prioridade 1: verificar em ideperiodo.inivalid (correto)
+            if (!empty($dados['ideperiodo']['inivalid'])) {
+                $inivalid = trim((string)$dados['ideperiodo']['inivalid']);
+                error_log("S-1000: inivalid encontrado em ideperiodo.inivalid: {$inivalid}");
+            }
+            // Prioridade 2: verificar em infocadastro.inivalid (compatibilidade)
+            else if (!empty($dados['infocadastro']['inivalid'])) {
+                $inivalid = trim((string)$dados['infocadastro']['inivalid']);
+                error_log("S-1000: inivalid encontrado em infocadastro.inivalid (migrando para ideperiodo): {$inivalid}");
+                // Mover para o local correto
+                $dados['ideperiodo']['inivalid'] = $inivalid;
+                // Remover do local antigo para evitar confusão
+                unset($dados['infocadastro']['inivalid']);
+            }
+            
+            // Se ainda não encontrou, lançar erro
+            if (empty($inivalid)) {
+                throw new \Exception('O campo "inivalid" (início da validade) é obrigatório no evento S-1000. Informe a data no formato AAAA-MM (ex: "2024-01" para janeiro de 2024) no campo "ideperiodo.inivalid". Este campo define o período inicial de validade das informações do empregador.');
+            }
+            
+            // Validar formato do inivalid (AAAA-MM)
+            if (!preg_match('/^\d{4}-\d{2}$/', $inivalid)) {
+                throw new \Exception('O campo "inivalid" deve estar no formato AAAA-MM (ex: "2024-01"). Valor recebido: "' . $inivalid . '"');
+            }
+            
+            // Validar se o mês está entre 01 e 12
+            $partes = explode('-', $inivalid);
+            $ano = (int)$partes[0];
+            $mes = (int)$partes[1];
+            
+            if ($ano < 2010 || $ano > 2100) {
+                throw new \Exception('O campo "inivalid" deve ter um ano válido entre 2010 e 2100. Valor recebido: "' . $inivalid . '"');
+            }
+            
+            if ($mes < 1 || $mes > 12) {
+                throw new \Exception('O campo "inivalid" deve ter um mês válido entre 01 e 12. Valor recebido: "' . $inivalid . '"');
+            }
+            
+            // IMPORTANTE: Validar se o inivalid não está no futuro
+            // O eSocial exige que o inivalid seja anterior ou igual ao mês atual
+            $dataAtual = new \DateTime();
+            $anoAtual = (int)$dataAtual->format('Y');
+            $mesAtual = (int)$dataAtual->format('m');
+            
+            // Criar data do inivalid para comparação
+            $dataInivalid = \DateTime::createFromFormat('Y-m', sprintf('%04d-%02d', $ano, $mes));
+            $dataAtualFormatada = \DateTime::createFromFormat('Y-m', sprintf('%04d-%02d', $anoAtual, $mesAtual));
+            
+            // Verificar se o inivalid está no futuro (mais de 1 mês à frente)
+            // Permitir até 1 mês no futuro para casos de cadastramento antecipado
+            $dataLimite = clone $dataAtualFormatada;
+            $dataLimite->modify('+1 month');
+            
+            if ($dataInivalid > $dataLimite) {
+                error_log("⚠️ AVISO S-1000: inivalid está muito no futuro ({$inivalid}). Isso pode causar problemas com eventos de períodos anteriores.");
+            }
+            
+            // Garantir que o campo esteja no formato correto (com zero à esquerda no mês se necessário)
+            $inivalidFormatado = sprintf('%04d-%02d', $ano, $mes);
+            $dados['ideperiodo']['inivalid'] = $inivalidFormatado;
+            
+            error_log("✅ S-1000: inivalid validado e formatado: {$inivalidFormatado} (Ano atual: {$anoAtual}, Mês atual: {$mesAtual})");
+            
+            // Validar e formatar fimvalid se existir
+            if (!empty($dados['ideperiodo']['fimvalid'])) {
+                $fimvalid = trim((string)$dados['ideperiodo']['fimvalid']);
+                if (preg_match('/^\d{4}-\d{2}$/', $fimvalid)) {
+                    $partesFim = explode('-', $fimvalid);
+                    $anoFim = (int)$partesFim[0];
+                    $mesFim = (int)$partesFim[1];
+                    if ($anoFim >= 2010 && $anoFim <= 2100 && $mesFim >= 1 && $mesFim <= 12) {
+                        $dados['ideperiodo']['fimvalid'] = sprintf('%04d-%02d', $anoFim, $mesFim);
+                    } else {
+                        // Se formato inválido, remover
+                        unset($dados['ideperiodo']['fimvalid']);
+                    }
+                } else {
+                    // Se formato inválido, remover
+                    unset($dados['ideperiodo']['fimvalid']);
+                }
+            }
+            
+            // Validar campos opcionais mas importantes
+            // inddesfolha / indDesFolha (Indicativo de desoneração da folha) - deve ser inteiro (0, 1 ou 2)
+            // Aceitar ambos os formatos de nome (minúsculas e camelCase)
+            $inddesfolha = null;
+            if (isset($dados['infocadastro']['inddesfolha'])) {
+                $inddesfolha = $dados['infocadastro']['inddesfolha'];
+            } elseif (isset($dados['infocadastro']['indDesFolha'])) {
+                $inddesfolha = $dados['infocadastro']['indDesFolha'];
+            }
+            
+            // Converter para inteiro e validar valores permitidos (0, 1 ou 2)
+            if ($inddesfolha === null || $inddesfolha === '') {
+                $inddesfolha = 0; // Valor padrão: 0 - Não aplicável
+            } else {
+                $inddesfolha = (int)$inddesfolha;
+                if (!in_array($inddesfolha, [0, 1, 2])) {
+                    $inddesfolha = 0; // Se valor inválido, usar padrão
+                }
+            }
+            // Normalizar para minúsculas (formato esperado pelo eSocial)
+            $dados['infocadastro']['inddesfolha'] = $inddesfolha;
+            // Remover versão camelCase se existir
+            if (isset($dados['infocadastro']['indDesFolha'])) {
+                unset($dados['infocadastro']['indDesFolha']);
+            }
+            
+            // indoptregeletron / indOptRegEletron (Indicativo de opção pelo registro eletrônico) - deve ser inteiro (0 ou 1)
+            // Aceitar ambos os formatos de nome (minúsculas e camelCase)
+            $indoptregeletron = null;
+            if (isset($dados['infocadastro']['indoptregeletron'])) {
+                $indoptregeletron = $dados['infocadastro']['indoptregeletron'];
+            } elseif (isset($dados['infocadastro']['indOptRegEletron'])) {
+                $indoptregeletron = $dados['infocadastro']['indOptRegEletron'];
+            }
+            
+            // Converter para inteiro e validar valores permitidos (0 ou 1)
+            if ($indoptregeletron === null || $indoptregeletron === '') {
+                $indoptregeletron = 0; // Valor padrão: 0 - Não optou
+            } else {
+                $indoptregeletron = (int)$indoptregeletron;
+                if (!in_array($indoptregeletron, [0, 1])) {
+                    $indoptregeletron = 0; // Se valor inválido, usar padrão
+                }
+            }
+            // Normalizar para minúsculas (formato esperado pelo eSocial)
+            $dados['infocadastro']['indoptregeletron'] = $indoptregeletron;
+            // Remover versão camelCase se existir
+            if (isset($dados['infocadastro']['indOptRegEletron'])) {
+                unset($dados['infocadastro']['indOptRegEletron']);
+            }
+            
+            error_log("✅ S-1000: Validações concluídas - classtrib: {$classtrib}, ideperiodo.inivalid: {$inivalidFormatado}, inddesfolha: {$inddesfolha} (tipo: " . gettype($inddesfolha) . "), indoptregeletron: {$indoptregeletron} (tipo: " . gettype($indoptregeletron) . ")");
+        }
+
+        // Validações e tratamento para S-1200 (Remuneração)
+        if ($tipo === 'S-1200') {
+            error_log("S-1200: Dados recebidos - " . json_encode($dados, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            
+            // Validar campo obrigatório perapur (período de apuração) - formato AAAA-MM
+            if (empty($dados['perapur'])) {
+                throw new \Exception('O campo "perapur" (período de apuração) é obrigatório no evento S-1200. Informe a data no formato AAAA-MM (ex: "2024-10" para outubro de 2024).');
+            }
+            
+            // Validar formato do perapur (AAAA-MM)
+            $perapur = trim((string)$dados['perapur']);
+            if (!preg_match('/^\d{4}-\d{2}$/', $perapur)) {
+                throw new \Exception('O campo "perapur" deve estar no formato AAAA-MM (ex: "2024-10"). Valor recebido: "' . $perapur . '"');
+            }
+            
+            // Validar se o mês está entre 01 e 12
+            $partes = explode('-', $perapur);
+            $ano = (int)$partes[0];
+            $mes = (int)$partes[1];
+            
+            if ($ano < 2010 || $ano > 2100) {
+                throw new \Exception('O campo "perapur" deve ter um ano válido entre 2010 e 2100. Valor recebido: "' . $perapur . '"');
+            }
+            
+            if ($mes < 1 || $mes > 12) {
+                throw new \Exception('O campo "perapur" deve ter um mês válido entre 01 e 12. Valor recebido: "' . $perapur . '"');
+            }
+            
+            // Garantir que o campo esteja no formato correto
+            $dados['perapur'] = sprintf('%04d-%02d', $ano, $mes);
+            
+            // Validar indretif (indicativo de retificação)
+            if (!isset($dados['indretif']) || $dados['indretif'] === null) {
+                $dados['indretif'] = 1; // 1 = Original, 2 = Retificação
+            }
+            
+            // Se for retificação, nrrecibo é obrigatório
+            if ($dados['indretif'] == 2 && empty($dados['nrrecibo'])) {
+                throw new \Exception('O campo "nrrecibo" é obrigatório quando "indretif" é igual a 2 (Retificação).');
+            }
+            
+            // Remover nrrecibo se for original (indretif = 1)
+            if ($dados['indretif'] == 1 && isset($dados['nrrecibo'])) {
+                unset($dados['nrrecibo']);
+            }
+            
+            // Validar indapuracao (indicativo de apuração)
+            if (!isset($dados['indapuracao']) || $dados['indapuracao'] === null) {
+                $dados['indapuracao'] = 1; // 1 = Mensal, 2 = Anual (13º salário)
+            }
+            
+            // Validar cpftrab (CPF do trabalhador)
+            if (empty($dados['cpftrab'])) {
+                throw new \Exception('O campo "cpftrab" (CPF do trabalhador) é obrigatório no evento S-1200.');
+            }
+            
+            // Limpar CPF (remover formatação)
+            $cpftrab = preg_replace('/\D/', '', (string)$dados['cpftrab']);
+            if (strlen($cpftrab) !== 11) {
+                throw new \Exception('O campo "cpftrab" deve conter 11 dígitos. Valor recebido: "' . $dados['cpftrab'] . '"');
+            }
+            $dados['cpftrab'] = $cpftrab;
+            
+            // Formatar CNPJ do estabelecimento (nrinsc) se existir
+            // No S-1200, o nrinsc está dentro de ideestablot
+            // REGRA OFICIAL: Para tpInsc = 1 (CNPJ), SEMPRE usar apenas a raiz do CNPJ (8 dígitos)
+            // O eSocial identifica o estabelecimento completo pelo evento S-1005, não pelo CNPJ completo
+            if (isset($dados['dmdev']) && is_array($dados['dmdev'])) {
+                foreach ($dados['dmdev'] as &$dmdev) {
+                    if (isset($dmdev['infoperapur']['ideestablot']) && is_array($dmdev['infoperapur']['ideestablot'])) {
+                        foreach ($dmdev['infoperapur']['ideestablot'] as &$establot) {
+                            if (isset($establot['tpinsc']) && $establot['tpinsc'] == 1 && isset($establot['nrinsc'])) {
+                                $nrinsc = preg_replace('/\D/', '', (string)$establot['nrinsc']);
+                                $nrinscLength = strlen($nrinsc);
+                                
+                                // Sempre usar apenas a raiz do CNPJ (8 dígitos) para tpInsc = 1
+                                if ($nrinscLength >= 8) {
+                                    $establot['nrinsc'] = substr($nrinsc, 0, 8);
+                                    error_log("S-1200: CNPJ do estabelecimento formatado de {$nrinsc} ({$nrinscLength} dígitos) para " . substr($nrinsc, 0, 8) . " (8 dígitos - raiz do CNPJ)");
+                                } else {
+                                    $establot['nrinsc'] = str_pad($nrinsc, 8, '0', STR_PAD_LEFT);
+                                    error_log("S-1200: CNPJ do estabelecimento preenchido com zeros. Original: {$nrinsc} ({$nrinscLength} dígitos), Formatado: {$establot['nrinsc']}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Remover campos null do nível raiz
+            $camposNull = ['nrrecibo', 'infomv', 'infocomplem', 'procjudtrab', 'infoperant'];
+            foreach ($camposNull as $campo) {
+                if (isset($dados[$campo]) && $dados[$campo] === null) {
+                    unset($dados[$campo]);
+                }
+            }
+            
+            // Remover campos null dentro de dmdev
+            if (isset($dados['dmdev']) && is_array($dados['dmdev'])) {
+                foreach ($dados['dmdev'] as &$dmdev) {
+                    if (isset($dmdev['infoperant']) && $dmdev['infoperant'] === null) {
+                        unset($dmdev['infoperant']);
+                    }
+                    if (isset($dmdev['infoperapur']['ideestablot']) && is_array($dmdev['infoperapur']['ideestablot'])) {
+                        foreach ($dmdev['infoperapur']['ideestablot'] as &$establot) {
+                            if (isset($establot['remunperapur']) && is_array($establot['remunperapur'])) {
+                                foreach ($establot['remunperapur'] as &$remun) {
+                                    if (isset($remun['indsimples']) && $remun['indsimples'] === null) {
+                                        unset($remun['indsimples']);
+                                    }
+                                    if (isset($remun['itensremun']) && is_array($remun['itensremun'])) {
+                                        foreach ($remun['itensremun'] as &$item) {
+                                            if (isset($item['fatorrubr']) && $item['fatorrubr'] === null) {
+                                                unset($item['fatorrubr']);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            error_log("✅ S-1200: Validações concluídas - perapur: {$dados['perapur']}, indretif: {$dados['indretif']}, indapuracao: {$dados['indapuracao']}, cpftrab: {$dados['cpftrab']}");
         }
 
         // Limpar campos opcionais vazios para S-1005
@@ -908,70 +1192,45 @@ class EsocialController
             $limparVazios($dados);
         }
 
-        // Formatar CNPJ para S-1000: usar apenas CNPJ base (8 dígitos) exceto para órgãos públicos
-        if ($tipo === 'S-1000' && isset($dados['ideEmpregador']['tpInsc']) && $dados['ideEmpregador']['tpInsc'] == 1) {
-            if (isset($dados['ideEmpregador']['nrInsc']) && !empty($dados['ideEmpregador']['nrInsc'])) {
-                $cnpjOriginal = $dados['ideEmpregador']['nrInsc'];
-                $cnpj = preg_replace('/\D/', '', (string)$dados['ideEmpregador']['nrInsc']);
-                $classtrib = isset($dados['infocadastro']['classtrib']) ? (string)$dados['infocadastro']['classtrib'] : '';
-                
-                error_log("🔍 S-1000 MONTAR EVENTO: CNPJ recebido - Original: '{$cnpjOriginal}', Limpo: '{$cnpj}' (tamanho: " . strlen($cnpj) . "), Classificação: '{$classtrib}'");
-                
-                // Códigos de classificação tributária para órgãos públicos (podem usar CNPJ completo)
-                $codigosOrgaoPublico = ['21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33'];
-                $isOrgaoPublico = in_array($classtrib, $codigosOrgaoPublico);
-                
-                $cnpjLength = strlen($cnpj);
-                
-                // SEMPRE formatar: órgão público precisa ter exatamente 14 dígitos, outros precisam ter exatamente 8
-                if ($isOrgaoPublico) {
-                    // Órgão público: garantir que tenha exatamente 14 dígitos
-                    if ($cnpjLength == 14) {
-                        $dados['ideEmpregador']['nrInsc'] = $cnpj;
-                        error_log("✅ S-1000: CNPJ mantido completo (14 dígitos) para órgão público. Classificação: {$classtrib}, CNPJ: {$cnpj}");
-                    } else if ($cnpjLength > 14) {
-                        // Se tiver mais de 14, pegar os primeiros 14
-                        $dados['ideEmpregador']['nrInsc'] = substr($cnpj, 0, 14);
-                        error_log("✅ S-1000: CNPJ truncado para 14 dígitos (órgão público). Original: {$cnpj} ({$cnpjLength} dígitos), Formatado: " . $dados['ideEmpregador']['nrInsc']);
-                    } else {
-                        // Se tiver menos de 14, preencher com zeros à esquerda
-                        $dados['ideEmpregador']['nrInsc'] = str_pad($cnpj, 14, '0', STR_PAD_LEFT);
-                        error_log("✅ S-1000: CNPJ preenchido para 14 dígitos (órgão público). Original: {$cnpj} ({$cnpjLength} dígitos), Formatado: " . $dados['ideEmpregador']['nrInsc']);
-                    }
-                } else {
-                    // Para todos os outros casos (empresas privadas), SEMPRE usar apenas CNPJ base (8 dígitos)
-                    // Independente se o CNPJ original tem 14 dígitos ou não
-                    if ($cnpjLength >= 8) {
-                        $dados['ideEmpregador']['nrInsc'] = substr($cnpj, 0, 8);
-                        error_log("✅ S-1000: CNPJ formatado para base (8 dígitos). Original: {$cnpj} ({$cnpjLength} dígitos), Formatado: " . substr($cnpj, 0, 8) . ". Classificação: {$classtrib}, É órgão público: Não");
-                    } else {
-                        // Se tiver menos de 8 dígitos, preencher com zeros à esquerda
-                        $dados['ideEmpregador']['nrInsc'] = str_pad($cnpj, 8, '0', STR_PAD_LEFT);
-                        error_log("✅ S-1000: CNPJ preenchido com zeros. Original: {$cnpj} ({$cnpjLength} dígitos), Formatado: " . $dados['ideEmpregador']['nrInsc']);
-                    }
-                }
-                
-                // Garantir que seja string (não número) para evitar conversão automática
-                $dados['ideEmpregador']['nrInsc'] = (string)$dados['ideEmpregador']['nrInsc'];
-                
-                // Log final para confirmar
-                error_log("🔍 S-1000 MONTAR EVENTO (FINAL): CNPJ formatado = '{$dados['ideEmpregador']['nrInsc']}' (tamanho: " . strlen($dados['ideEmpregador']['nrInsc']) . ", tipo: " . gettype($dados['ideEmpregador']['nrInsc']) . ")");
-            } else {
-                error_log("⚠️ S-1000: nrInsc não encontrado ou vazio!");
-            }
+        // Log final do CNPJ formatado para S-1000 (já foi formatado no início)
+        if ($tipo === 'S-1000' && isset($dados['ideEmpregador']['nrInsc'])) {
+            error_log("🔍 S-1000 MONTAR EVENTO (FINAL): CNPJ formatado = '{$dados['ideEmpregador']['nrInsc']}' (tamanho: " . strlen($dados['ideEmpregador']['nrInsc']) . ", tipo: " . gettype($dados['ideEmpregador']['nrInsc']) . ")");
         }
 
         // Converter dados para stdClass (formato esperado pela biblioteca)
         $std = json_decode(json_encode($dados), false);
         
         // Garantir que o CNPJ seja string após conversão (json_decode pode converter para número)
-        if ($tipo === 'S-1000' && isset($std->ideEmpregador->nrInsc)) {
-            $cnpjFinal = (string)$std->ideEmpregador->nrInsc;
+        // REGRA OFICIAL: Para tpInsc = 1 (CNPJ), SEMPRE usar apenas a raiz do CNPJ (8 dígitos)
+        if (isset($std->ideEmpregador->tpInsc) && $std->ideEmpregador->tpInsc == 1 && isset($std->ideEmpregador->nrInsc)) {
+            $cnpjFinal = preg_replace('/\D/', '', (string)$std->ideEmpregador->nrInsc);
+            $cnpjFinalLength = strlen($cnpjFinal);
+            
+            // Sempre usar apenas a raiz do CNPJ (8 dígitos) para tpInsc = 1
+            if ($cnpjFinalLength >= 8) {
+                $cnpjFinal = substr($cnpjFinal, 0, 8);
+            } else {
+                $cnpjFinal = str_pad($cnpjFinal, 8, '0', STR_PAD_LEFT);
+            }
+            
             $std->ideEmpregador->nrInsc = $cnpjFinal;
-            error_log("🔍 S-1000 APÓS CONVERSÃO: CNPJ = '{$cnpjFinal}' (tamanho: " . strlen($cnpjFinal) . ")");
+            error_log("🔍 {$tipo} APÓS CONVERSÃO: CNPJ formatado para 8 dígitos (raiz do CNPJ). Original tinha {$cnpjFinalLength} dígitos, Formatado: {$cnpjFinal}");
+            
             // Garantir que está correto
-            if (strlen($cnpjFinal) !== 8 && strlen($cnpjFinal) !== 14) {
-                error_log("⚠️ ERRO: CNPJ tem tamanho incorreto após conversão: " . strlen($cnpjFinal));
+            if (strlen($cnpjFinal) !== 8) {
+                error_log("⚠️ ERRO {$tipo}: CNPJ tem tamanho incorreto após conversão: " . strlen($cnpjFinal));
+            }
+        }
+        
+        // Garantir que inddesfolha e indoptregeletron sejam inteiros após conversão (apenas S-1000)
+        if ($tipo === 'S-1000') {
+            if (isset($std->infocadastro->inddesfolha)) {
+                $std->infocadastro->inddesfolha = (int)$std->infocadastro->inddesfolha;
+                error_log("🔍 S-1000 APÓS CONVERSÃO: inddesfolha = {$std->infocadastro->inddesfolha} (tipo: " . gettype($std->infocadastro->inddesfolha) . ")");
+            }
+            if (isset($std->infocadastro->indoptregeletron)) {
+                $std->infocadastro->indoptregeletron = (int)$std->infocadastro->indoptregeletron;
+                error_log("🔍 S-1000 APÓS CONVERSÃO: indoptregeletron = {$std->infocadastro->indoptregeletron} (tipo: " . gettype($std->infocadastro->indoptregeletron) . ")");
             }
         }
 
@@ -996,13 +1255,26 @@ class EsocialController
             $eventoVersion = 'S.1.3.0'; // Usar a versão mais recente disponível
         }
         
+        // Garantir que o CNPJ do empregador na configuração seja sempre 8 dígitos (raiz do CNPJ)
+        $empregadorNrInsc = $this->config['empregador']['nrInsc'] ?? '';
+        $empregadorNrInscOriginal = $empregadorNrInsc;
+        if (!empty($empregadorNrInsc) && ($this->config['empregador']['tpInsc'] ?? 1) == 1) {
+            $empregadorNrInsc = preg_replace('/\D/', '', (string)$empregadorNrInsc);
+            if (strlen($empregadorNrInsc) >= 8) {
+                $empregadorNrInsc = substr($empregadorNrInsc, 0, 8);
+            } else {
+                $empregadorNrInsc = str_pad($empregadorNrInsc, 8, '0', STR_PAD_LEFT);
+            }
+            error_log("🔧 CREATE FACTORY ({$tipo}): CNPJ do empregador formatado de '{$empregadorNrInscOriginal}' para '{$empregadorNrInsc}' (8 dígitos)");
+        }
+        
         $config = json_encode([
             'tpAmb' => $this->config['tpAmb'] ?? 2,
             'verProc' => $this->config['verProc'] ?? 'SISTEMA-RH-1.0',
             'eventoVersion' => $eventoVersion,
             'empregador' => [
                 'tpInsc' => $this->config['empregador']['tpInsc'] ?? 1,
-                'nrInsc' => $this->config['empregador']['nrInsc'] ?? '',
+                'nrInsc' => $empregadorNrInsc, // Sempre usar apenas a raiz do CNPJ (8 dígitos)
                 'nmRazao' => $this->config['empregador']['nmRazao'] ?? 'Empresa',
             ]
         ]);
