@@ -7,4 +7,5 @@ config.json
 *.swp
 *.swo
 *~
+.jsonvalidation_patch.php
 
