@@ -18,10 +18,10 @@
     },
     "scripts": {
         "post-install-cmd": [
-            "@php apply-patch.sh"
+            "bash apply-patch.sh"
         ],
         "post-update-cmd": [
-            "@php apply-patch.sh"
+            "bash apply-patch.sh"
         ]
     }
 }
