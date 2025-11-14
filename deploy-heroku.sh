@@ -40,9 +40,16 @@ heroku git:remote -a "$HEROKU_APP_NAME" 2>/dev/null || heroku create "$HEROKU_AP
 echo "⚙️  Configurando buildpack PHP..."
 heroku buildpacks:set heroku/php -a "$HEROKU_APP_NAME"
 
+# Renomear branch para main se necessário
+CURRENT_BRANCH=$(git branch --show-current)
+if [ "$CURRENT_BRANCH" = "master" ]; then
+    echo "🔄 Renomeando branch master para main..."
+    git branch -M main 2>/dev/null || true
+fi
+
 # Fazer deploy
 echo "📤 Fazendo deploy..."
-git push heroku main || git push heroku master
+git push heroku main 2>/dev/null || git push heroku master
 
 echo "✅ Deploy concluído!"
 echo "🌐 URL: https://$HEROKU_APP_NAME.herokuapp.com"

@@ -1,0 +1,25 @@
+===========================================
+DEPLOY RÁPIDO - eSocial Service no Heroku
+===========================================
+
+✅ Repositório Git já foi inicializado nesta pasta!
+
+AGORA FAÇA:
+
+1. No Dashboard do Heroku:
+   - Vá para o app que você criou
+   - Aba "Deploy" → "Heroku Git"
+   - Copie o comando que aparece (algo como):
+     heroku git:remote -a seu-app-esocial-service
+
+2. Execute na pasta esocial-service:
+   cd "/home/esaumatias/Documentos/NOVO INSTITUTO/esocial-service"
+   heroku git:remote -a seu-app-esocial-service
+   heroku buildpacks:set heroku/php -a seu-app-esocial-service
+   git push heroku master
+
+OU use o script automático:
+   ./deploy-heroku.sh
+
+O script pedirá o nome do app e fará tudo automaticamente!
+
