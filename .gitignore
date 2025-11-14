@@ -1,0 +1,11 @@
+/vendor/
+composer.lock
+*.log
+.env
+storage/
+config.json
+.DS_Store
+*.swp
+*.swo
+*~
+

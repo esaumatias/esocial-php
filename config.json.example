@@ -1,0 +1,16 @@
+{
+  "tpAmb": 2,
+  "verProc": "SISTEMA-RH-1.0",
+  "eventoVersion": "S.1.3.0",
+  "serviceVersion": "1.5.0",
+  "empregador": {
+    "tpInsc": 1,
+    "nrInsc": "",
+    "nmRazao": ""
+  },
+  "certificate": {
+    "pfx": "",
+    "password": ""
+  }
+}
+

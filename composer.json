@@ -1,0 +1,28 @@
+{
+    "name": "sistema-rh/esocial-service",
+    "description": "Serviço PHP para integração com eSocial",
+    "type": "project",
+    "require": {
+        "php": ">=7.4",
+        "nfephp-org/sped-esocial": "dev-master",
+        "ext-curl": "*",
+        "ext-openssl": "*",
+        "ext-xml": "*"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "autoload": {
+        "psr-4": {
+            "EsocialService\\": "src/"
+        }
+    },
+    "scripts": {
+        "post-install-cmd": [
+            "@php apply-patch.sh"
+        ],
+        "post-update-cmd": [
+            "@php apply-patch.sh"
+        ]
+    }
+}
+
