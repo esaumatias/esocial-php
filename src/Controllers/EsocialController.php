@@ -410,6 +410,25 @@ class EsocialController
         // Debug: log dos dados recebidos
         if ($tipo === 'S-1000') {
             error_log("S-1000: Dados recebidos - " . json_encode($dados, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            
+            // Garantir que infocadastro existe
+            if (!isset($dados['infocadastro']) || !is_array($dados['infocadastro'])) {
+                $dados['infocadastro'] = [];
+            }
+            
+            // Validar campo obrigatório classtrib (classTrib)
+            if (empty($dados['infocadastro']['classtrib'])) {
+                throw new \Exception('O campo "classtrib" (classificação tributária) é obrigatório no evento S-1000. Informe um código de 2 dígitos (ex: "01" para Empresa enquadrada no regime tributário Normal, "02" para Empresa enquadrada no regime tributário Simples Nacional, etc.)');
+            }
+            
+            // Garantir que classtrib seja string com 2 dígitos
+            $classtrib = trim((string)$dados['infocadastro']['classtrib']);
+            if (strlen($classtrib) !== 2 || !preg_match('/^\d{2}$/', $classtrib)) {
+                throw new \Exception('O campo "classtrib" deve conter exatamente 2 dígitos numéricos. Valor recebido: "' . $classtrib . '"');
+            }
+            
+            // Garantir que o campo esteja no formato correto
+            $dados['infocadastro']['classtrib'] = $classtrib;
         }
 
         // Limpar campos opcionais vazios para S-1005
