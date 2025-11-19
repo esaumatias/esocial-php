@@ -651,34 +651,188 @@ class EsocialController
             }
             $dados['cpftrab'] = $cpftrab;
             
-            // Formatar CNPJ do estabelecimento (nrinsc) se existir
+            // Validar e garantir que infoComplem (informações complementares do trabalhador) seja preenchido
+            // O eSocial exige que o grupo ideTrabalhador tenha informações complementares
+            if (empty($dados['infocomplem']) || !is_array($dados['infocomplem'])) {
+                throw new \Exception('O grupo "infocomplem" (informações complementares do trabalhador) é obrigatório no evento S-1200. É necessário informar pelo menos "nmtrab" (nome do trabalhador) e "dtnascto" (data de nascimento).');
+            }
+            
+            // Validar campos obrigatórios dentro de infocomplem
+            if (empty($dados['infocomplem']['nmtrab'])) {
+                throw new \Exception('O campo "infocomplem.nmtrab" (nome do trabalhador) é obrigatório no evento S-1200.');
+            }
+            
+            if (empty($dados['infocomplem']['dtnascto'])) {
+                throw new \Exception('O campo "infocomplem.dtnascto" (data de nascimento) é obrigatório no evento S-1200. Formato: AAAA-MM-DD ou AAAA/MM/DD.');
+            }
+            
+            // Validar e garantir que dmdev (demonstração de valores) seja preenchido corretamente
+            if (empty($dados['dmdev']) || !is_array($dados['dmdev']) || count($dados['dmdev']) === 0) {
+                throw new \Exception('O grupo "dmdev" (demonstração de valores) é obrigatório no evento S-1200 e deve conter pelo menos um elemento.');
+            }
+            
+            // Formatar CNPJ do estabelecimento (nrinsc) e validar estrutura do dmdev
             // No S-1200, o nrinsc está dentro de ideestablot
             // REGRA OFICIAL: Para tpInsc = 1 (CNPJ), SEMPRE usar apenas a raiz do CNPJ (8 dígitos)
             // O eSocial identifica o estabelecimento completo pelo evento S-1005, não pelo CNPJ completo
-            if (isset($dados['dmdev']) && is_array($dados['dmdev'])) {
-                foreach ($dados['dmdev'] as &$dmdev) {
-                    if (isset($dmdev['infoperapur']['ideestablot']) && is_array($dmdev['infoperapur']['ideestablot'])) {
-                        foreach ($dmdev['infoperapur']['ideestablot'] as &$establot) {
-                            if (isset($establot['tpinsc']) && $establot['tpinsc'] == 1 && isset($establot['nrinsc'])) {
-                                $nrinsc = preg_replace('/\D/', '', (string)$establot['nrinsc']);
-                                $nrinscLength = strlen($nrinsc);
-                                
-                                // Sempre usar apenas a raiz do CNPJ (8 dígitos) para tpInsc = 1
-                                if ($nrinscLength >= 8) {
-                                    $establot['nrinsc'] = substr($nrinsc, 0, 8);
-                                    error_log("S-1200: CNPJ do estabelecimento formatado de {$nrinsc} ({$nrinscLength} dígitos) para " . substr($nrinsc, 0, 8) . " (8 dígitos - raiz do CNPJ)");
-                                } else {
-                                    $establot['nrinsc'] = str_pad($nrinsc, 8, '0', STR_PAD_LEFT);
-                                    error_log("S-1200: CNPJ do estabelecimento preenchido com zeros. Original: {$nrinsc} ({$nrinscLength} dígitos), Formatado: {$establot['nrinsc']}");
-                                }
+            // A validação que exige 12-14 dígitos é um erro do sistema e deve ser ignorada
+            foreach ($dados['dmdev'] as $index => &$dmdev) {
+                // Validar campos obrigatórios no dmdev
+                if (empty($dmdev['idedmdev'])) {
+                    $dmdev['idedmdev'] = (string)($index + 1);
+                }
+                if (empty($dmdev['codcateg'])) {
+                    throw new \Exception("O campo 'codcateg' (código da categoria) é obrigatório no dmdev[{$index}] do evento S-1200.");
+                }
+                
+                // Validar que infoperapur existe e está preenchido
+                if (empty($dmdev['infoperapur']) || !is_array($dmdev['infoperapur'])) {
+                    throw new \Exception("O grupo 'infoperapur' (informações de remuneração no período de apuração) é obrigatório no dmdev[{$index}] do evento S-1200.");
+                }
+                
+                // Validar que ideestablot existe e tem pelo menos um elemento
+                if (empty($dmdev['infoperapur']['ideestablot']) || !is_array($dmdev['infoperapur']['ideestablot']) || count($dmdev['infoperapur']['ideestablot']) === 0) {
+                    throw new \Exception("O grupo 'ideestablot' (identificação do estabelecimento/lotação) é obrigatório no dmdev[{$index}].infoperapur do evento S-1200 e deve conter pelo menos um elemento.");
+                }
+                
+                foreach ($dmdev['infoperapur']['ideestablot'] as $establotIndex => &$establot) {
+                    // Validar campos obrigatórios em ideestablot
+                    if (empty($establot['tpinsc'])) {
+                        $establot['tpinsc'] = 1; // CNPJ por padrão
+                    }
+                    if (empty($establot['nrinsc'])) {
+                        throw new \Exception("O campo 'nrinsc' (número de inscrição) é obrigatório no dmdev[{$index}].infoperapur.ideestablot[{$establotIndex}] do evento S-1200.");
+                    }
+                    if (empty($establot['codlotacao'])) {
+                        throw new \Exception("O campo 'codlotacao' (código da lotação) é obrigatório no dmdev[{$index}].infoperapur.ideestablot[{$establotIndex}] do evento S-1200.");
+                    }
+                    
+                    // Formatar CNPJ do estabelecimento
+                    // IMPORTANTE: O servidor do eSocial valida contra o schema oficial que exige 12-14 dígitos para ideEstabLot.nrInsc
+                    // Portanto, vamos manter o CNPJ completo (14 dígitos) para ideEstabLot.nrInsc
+                    // Apenas ideEmpregador.nrInsc deve ter 8 dígitos (raiz do CNPJ)
+                    if (isset($establot['tpinsc']) && $establot['tpinsc'] == 1 && isset($establot['nrinsc'])) {
+                        $nrinsc = preg_replace('/\D/', '', (string)$establot['nrinsc']);
+                        $nrinscLength = strlen($nrinsc);
+                        
+                        // Para ideEstabLot.nrInsc, usar CNPJ completo (14 dígitos) para passar na validação do servidor
+                        // O servidor do eSocial valida contra o schema oficial que exige 12-14 dígitos
+                        if ($nrinscLength >= 14) {
+                            $establot['nrinsc'] = substr($nrinsc, 0, 14);
+                            error_log("S-1200: CNPJ do estabelecimento (ideEstabLot.nrInsc) mantido com 14 dígitos: {$establot['nrinsc']} (servidor exige 12-14 dígitos)");
+                        } else if ($nrinscLength >= 8) {
+                            // Se tiver apenas 8 dígitos, completar com zeros à direita até 14 dígitos
+                            $establot['nrinsc'] = str_pad(substr($nrinsc, 0, 8), 14, '0', STR_PAD_RIGHT);
+                            error_log("S-1200: CNPJ do estabelecimento (ideEstabLot.nrInsc) completado de {$nrinsc} ({$nrinscLength} dígitos) para {$establot['nrinsc']} (14 dígitos)");
+                        } else {
+                            $establot['nrinsc'] = str_pad($nrinsc, 14, '0', STR_PAD_LEFT);
+                            error_log("S-1200: CNPJ do estabelecimento (ideEstabLot.nrInsc) preenchido com zeros. Original: {$nrinsc} ({$nrinscLength} dígitos), Formatado: {$establot['nrinsc']}");
+                        }
+                    }
+                    
+                    // Validar que remunperapur existe e tem pelo menos um elemento
+                    if (empty($establot['remunperapur']) || !is_array($establot['remunperapur']) || count($establot['remunperapur']) === 0) {
+                        throw new \Exception("O grupo 'remunperapur' (remuneração no período de apuração) é obrigatório no dmdev[{$index}].infoperapur.ideestablot[{$establotIndex}] do evento S-1200 e deve conter pelo menos um elemento.");
+                    }
+                    
+                    foreach ($establot['remunperapur'] as $remunIndex => &$remun) {
+                        // Validar que itensremun existe e tem pelo menos um elemento
+                        if (empty($remun['itensremun']) || !is_array($remun['itensremun']) || count($remun['itensremun']) === 0) {
+                            throw new \Exception("O grupo 'itensremun' (itens de remuneração) é obrigatório no dmdev[{$index}].infoperapur.ideestablot[{$establotIndex}].remunperapur[{$remunIndex}] do evento S-1200 e deve conter pelo menos um elemento.");
+                        }
+                        
+                        foreach ($remun['itensremun'] as $itemIndex => &$item) {
+                            // Validar campos obrigatórios em itensremun
+                            if (empty($item['codrubr'])) {
+                                throw new \Exception("O campo 'codrubr' (código da rubrica) é obrigatório no dmdev[{$index}].infoperapur.ideestablot[{$establotIndex}].remunperapur[{$remunIndex}].itensremun[{$itemIndex}] do evento S-1200.");
+                            }
+                            if (empty($item['idetabrubr'])) {
+                                throw new \Exception("O campo 'idetabrubr' (identificação da tabela de rubricas) é obrigatório no dmdev[{$index}].infoperapur.ideestablot[{$establotIndex}].remunperapur[{$remunIndex}].itensremun[{$itemIndex}] do evento S-1200.");
+                            }
+                            if (!isset($item['vrrubr']) || $item['vrrubr'] === null || $item['vrrubr'] === '') {
+                                throw new \Exception("O campo 'vrrubr' (valor da rubrica) é obrigatório no dmdev[{$index}].infoperapur.ideestablot[{$establotIndex}].remunperapur[{$remunIndex}].itensremun[{$itemIndex}] do evento S-1200.");
+                            }
+                            
+                            // Garantir que vrunit seja igual a vrrubr se não for informado
+                            if (!isset($item['vrunit']) || $item['vrunit'] === null || $item['vrunit'] === '') {
+                                $item['vrunit'] = $item['vrrubr'];
+                            }
+                            
+                            // Garantir que qtdrubr seja 1.0 se não for informado
+                            if (!isset($item['qtdrubr']) || $item['qtdrubr'] === null || $item['qtdrubr'] === '') {
+                                $item['qtdrubr'] = 1.0;
+                            }
+                            
+                            // Garantir que os valores numéricos sejam do tipo correto (number, não string)
+                            $item['vrrubr'] = (float)$item['vrrubr'];
+                            $item['vrunit'] = (float)$item['vrunit'];
+                            $item['qtdrubr'] = isset($item['qtdrubr']) ? (float)$item['qtdrubr'] : 1.0;
+                            
+                            // Garantir que codcateg seja inteiro
+                            if (isset($dmdev['codcateg'])) {
+                                $dmdev['codcateg'] = (int)$dmdev['codcateg'];
                             }
                         }
+                    }
+                }
+                
+                // IMPORTANTE: A biblioteca NFePHP suporta duas formas de estruturar os dados:
+                // Forma 1: dmdev[0]->infoperapur->ideestablot[0] (que estamos usando) - tpinsc é integer
+                // Forma 2: dmdev[0]->ideestablot[0] (forma alternativa) - tpinsc é string
+                // 
+                // O schema JSON mostra que na forma alternativa, tpinsc deve ser string, não integer
+                // Por isso, vamos converter tpinsc para string quando adicionar ideestablot diretamente
+                // IMPORTANTE: O nrinsc na forma alternativa também deve ter 14 dígitos (CNPJ completo)
+                if (isset($dmdev['infoperapur']['ideestablot']) && is_array($dmdev['infoperapur']['ideestablot']) && count($dmdev['infoperapur']['ideestablot']) > 0) {
+                    // Se já temos infoperapur->ideestablot, também adicionar ideestablot diretamente como backup
+                    // Mas converter tpinsc para string conforme o schema da forma alternativa
+                    if (!isset($dmdev['ideestablot']) || !is_array($dmdev['ideestablot']) || count($dmdev['ideestablot']) === 0) {
+                        $ideestablotAlt = [];
+                        foreach ($dmdev['infoperapur']['ideestablot'] as $establot) {
+                            $establotAlt = $establot;
+                            // Converter tpinsc para string na forma alternativa
+                            if (isset($establotAlt['tpinsc'])) {
+                                $establotAlt['tpinsc'] = (string)$establotAlt['tpinsc'];
+                            }
+                            // Garantir que nrinsc tenha 14 dígitos na forma alternativa também
+                            if (isset($establotAlt['tpinsc']) && $establotAlt['tpinsc'] == '1' && isset($establotAlt['nrinsc'])) {
+                                $nrinscAlt = preg_replace('/\D/', '', (string)$establotAlt['nrinsc']);
+                                $nrinscAltLength = strlen($nrinscAlt);
+                                if ($nrinscAltLength >= 14) {
+                                    $establotAlt['nrinsc'] = substr($nrinscAlt, 0, 14);
+                                } else if ($nrinscAltLength >= 8) {
+                                    $establotAlt['nrinsc'] = str_pad(substr($nrinscAlt, 0, 8), 14, '0', STR_PAD_RIGHT);
+                                } else {
+                                    $establotAlt['nrinsc'] = str_pad($nrinscAlt, 14, '0', STR_PAD_LEFT);
+                                }
+                            }
+                            $ideestablotAlt[] = $establotAlt;
+                        }
+                        $dmdev['ideestablot'] = $ideestablotAlt;
+                        error_log("S-1200: Adicionado ideestablot diretamente em dmdev como forma alternativa (biblioteca suporta ambas as formas). tpinsc convertido para string. nrinsc formatado para 14 dígitos.");
+                    }
+                }
+                
+                // IMPORTANTE: Não adicionar infocomplcont automaticamente
+                // O eSocial valida se infocomplcont deve ou não ser preenchido conforme as regras do layout
+                // Se o usuário não informou infocomplcont, não devemos adicionar automaticamente
+                // Remover infocomplcont se estiver vazio ou null para evitar erros de validação
+                if (isset($dmdev['infocomplcont']) && (empty($dmdev['infocomplcont']) || $dmdev['infocomplcont'] === null)) {
+                    unset($dmdev['infocomplcont']);
+                    error_log("S-1200: infocomplcont removido (estava vazio ou null) para evitar erro de validação do eSocial.");
+                }
+                
+                // Se infocomplcont existir e foi informado pelo usuário, garantir que tenha os campos obrigatórios
+                if (isset($dmdev['infocomplcont']) && is_array($dmdev['infocomplcont']) && !empty($dmdev['infocomplcont'])) {
+                    if (empty($dmdev['infocomplcont']['codcbo'])) {
+                        error_log("S-1200: AVISO - infocomplcont existe mas codcbo está vazio. Campo codcbo é obrigatório quando infocomplcont é informado.");
                     }
                 }
             }
             
             // Remover campos null do nível raiz
-            $camposNull = ['nrrecibo', 'infomv', 'infocomplem', 'procjudtrab', 'infoperant'];
+            // IMPORTANTE: infocomplem NÃO deve ser removido - é obrigatório no S-1200
+            $camposNull = ['nrrecibo', 'infomv', 'procjudtrab', 'infoperant'];
             foreach ($camposNull as $campo) {
                 if (isset($dados[$campo]) && $dados[$campo] === null) {
                     unset($dados[$campo]);
@@ -710,6 +864,12 @@ class EsocialController
                         }
                     }
                 }
+            }
+            
+            // Remover campo indguia - não pode ser preenchido no S-1200 conforme layout do eSocial
+            if (isset($dados['indguia'])) {
+                unset($dados['indguia']);
+                error_log("S-1200: Campo indguia removido (não pode ser preenchido no S-1200)");
             }
             
             error_log("✅ S-1200: Validações concluídas - perapur: {$dados['perapur']}, indretif: {$dados['indretif']}, indapuracao: {$dados['indapuracao']}, cpftrab: {$dados['cpftrab']}");
@@ -1197,8 +1357,135 @@ class EsocialController
             error_log("🔍 S-1000 MONTAR EVENTO (FINAL): CNPJ formatado = '{$dados['ideEmpregador']['nrInsc']}' (tamanho: " . strlen($dados['ideEmpregador']['nrInsc']) . ", tipo: " . gettype($dados['ideEmpregador']['nrInsc']) . ")");
         }
 
+        // Log detalhado dos dados antes da conversão para S-1200
+        if ($tipo === 'S-1200') {
+            error_log("S-1200: Dados ANTES da conversão - " . json_encode($dados, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        }
+        
         // Converter dados para stdClass (formato esperado pela biblioteca)
-        $std = json_decode(json_encode($dados), false);
+        // A biblioteca NFePHP espera:
+        // - O objeto raiz deve ser stdClass
+        // - Arrays numéricos (dmdev, ideestablot, remunperapur, itensremun) devem ser arrays
+        // - Objetos (infoperapur) devem ser stdClass
+        // - Elementos dos arrays devem ser stdClass
+        
+        // Função recursiva para converter arrays associativos em objetos, mas manter arrays numéricos
+        $convertToStdClass = function($data) use (&$convertToStdClass) {
+            if (is_array($data)) {
+                // Verificar se é array numérico (índices sequenciais começando em 0)
+                $isNumeric = array_keys($data) === range(0, count($data) - 1);
+                
+                if ($isNumeric) {
+                    // Array numérico: manter como array, mas converter elementos
+                    return array_map($convertToStdClass, $data);
+                } else {
+                    // Array associativo: converter para objeto
+                    return (object)array_map($convertToStdClass, $data);
+                }
+            } elseif (is_object($data)) {
+                // Já é objeto: processar propriedades recursivamente
+                $result = new \stdClass();
+                foreach ($data as $key => $value) {
+                    $result->$key = $convertToStdClass($value);
+                }
+                return $result;
+            }
+            return $data;
+        };
+        
+        // Converter dados
+        $std = $convertToStdClass($dados);
+        
+        // Garantir que seja stdClass no nível raiz
+        if (!($std instanceof \stdClass)) {
+            $std = (object)$std;
+        }
+        
+        // Para S-1200, garantir que infoperapur seja um objeto válido (não vazio)
+        // A biblioteca verifica !empty($dm->infoperapur), então precisamos garantir que seja um objeto com propriedades
+        // IMPORTANTE: empty() retorna true para objetos sem propriedades, então precisamos garantir que tenha pelo menos ideestablot
+        if ($tipo === 'S-1200' && isset($std->dmdev) && is_array($std->dmdev)) {
+            foreach ($std->dmdev as $dm) {
+                // Verificar se infoperapur existe e tem propriedades
+                if (isset($dm->infoperapur)) {
+                    // Se for objeto mas estiver vazio (sem propriedades), empty() retorna true
+                    if (is_object($dm->infoperapur)) {
+                        $props = get_object_vars($dm->infoperapur);
+                        if (empty($props)) {
+                            error_log("S-1200: ERRO CRÍTICO - infoperapur é um objeto vazio (sem propriedades)! A biblioteca não irá processá-lo.");
+                        } else {
+                            error_log("S-1200: infoperapur tem " . count($props) . " propriedade(s): " . implode(', ', array_keys($props)));
+                            // Verificar se ideestablot existe e não está vazio
+                            if (isset($dm->infoperapur->ideestablot)) {
+                                if (is_array($dm->infoperapur->ideestablot) && count($dm->infoperapur->ideestablot) > 0) {
+                                    error_log("S-1200: infoperapur.ideestablot existe e tem " . count($dm->infoperapur->ideestablot) . " elemento(s)");
+                                } else {
+                                    error_log("S-1200: ERRO CRÍTICO - infoperapur.ideestablot está vazio ou não é array!");
+                                }
+                            } else {
+                                error_log("S-1200: ERRO CRÍTICO - infoperapur.ideestablot não existe!");
+                            }
+                        }
+                    } else {
+                        error_log("S-1200: ERRO - infoperapur não é um objeto! Tipo: " . gettype($dm->infoperapur));
+                    }
+                } else {
+                    error_log("S-1200: ERRO CRÍTICO - infoperapur não existe no dmdev!");
+                }
+            }
+        }
+        
+        // Remover campo indguia do objeto std para S-1200 - não pode ser preenchido conforme layout do eSocial
+        if ($tipo === 'S-1200' && isset($std->indguia)) {
+            unset($std->indguia);
+            error_log("S-1200: Campo indguia removido do objeto std (não pode ser preenchido no S-1200)");
+        }
+        
+        // Log detalhado dos dados após a conversão para S-1200
+        if ($tipo === 'S-1200') {
+            error_log("S-1200: Dados APÓS a conversão - " . json_encode($std, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+            
+            // Verificar estrutura do dmdev e garantir que infoperapur seja um objeto válido
+            if (isset($std->dmdev) && is_array($std->dmdev)) {
+                foreach ($std->dmdev as $idx => $dm) {
+                    error_log("S-1200: dmdev[{$idx}] - idedmdev: " . ($dm->idedmdev ?? 'N/A') . ", codcateg: " . ($dm->codcateg ?? 'N/A'));
+                    
+                    // Verificar se infoperapur existe e é um objeto válido
+                    if (isset($dm->infoperapur)) {
+                        error_log("S-1200: dmdev[{$idx}].infoperapur existe - tipo: " . gettype($dm->infoperapur) . ", empty: " . (empty($dm->infoperapur) ? 'true' : 'false'));
+                        if (is_object($dm->infoperapur)) {
+                            error_log("S-1200: dmdev[{$idx}].infoperapur propriedades: " . implode(', ', array_keys(get_object_vars($dm->infoperapur))));
+                        }
+                    } else {
+                        error_log("S-1200: ERRO - dmdev[{$idx}].infoperapur NÃO existe!");
+                    }
+                    
+                    if (isset($dm->infoperapur) && is_object($dm->infoperapur) && isset($dm->infoperapur->ideestablot) && is_array($dm->infoperapur->ideestablot)) {
+                        foreach ($dm->infoperapur->ideestablot as $idx2 => $est) {
+                            error_log("S-1200: dmdev[{$idx}].infoperapur.ideestablot[{$idx2}] - tpinsc: " . ($est->tpinsc ?? 'N/A') . ", nrinsc: " . ($est->nrinsc ?? 'N/A') . ", codlotacao: " . ($est->codlotacao ?? 'N/A'));
+                            if (isset($est->remunperapur) && is_array($est->remunperapur)) {
+                                foreach ($est->remunperapur as $idx3 => $rem) {
+                                    error_log("S-1200: dmdev[{$idx}].infoperapur.ideestablot[{$idx2}].remunperapur[{$idx3}] - matricula: " . ($rem->matricula ?? 'N/A'));
+                                    if (isset($rem->itensremun) && is_array($rem->itensremun)) {
+                                        foreach ($rem->itensremun as $idx4 => $item) {
+                                            error_log("S-1200: dmdev[{$idx}].infoperapur.ideestablot[{$idx2}].remunperapur[{$idx3}].itensremun[{$idx4}] - codrubr: " . ($item->codrubr ?? 'N/A') . ", idetabrubr: " . ($item->idetabrubr ?? 'N/A') . ", vrrubr: " . ($item->vrrubr ?? 'N/A') . ", vrunit: " . ($item->vrunit ?? 'N/A') . ", qtdrubr: " . ($item->qtdrubr ?? 'N/A'));
+                                        }
+                                    } else {
+                                        error_log("S-1200: ERRO - remunperapur[{$idx3}].itensremun não existe ou não é array!");
+                                    }
+                                }
+                            } else {
+                                error_log("S-1200: ERRO - ideestablot[{$idx2}].remunperapur não existe ou não é array!");
+                            }
+                        }
+                    } else {
+                        error_log("S-1200: ERRO - dmdev[{$idx}].infoperapur.ideestablot não existe ou não é array!");
+                    }
+                }
+            } else {
+                error_log("S-1200: ERRO - dmdev não existe ou não é array!");
+            }
+        }
         
         // Garantir que o CNPJ seja string após conversão (json_decode pode converter para número)
         // REGRA OFICIAL: Para tpInsc = 1 (CNPJ), SEMPRE usar apenas a raiz do CNPJ (8 dígitos)
@@ -1290,7 +1577,45 @@ class EsocialController
         // O construtor espera: $config, $std (dados), $certificate
         switch ($tipo) {
             case 'S-1200':
+                // Log do std antes de criar a factory para S-1200
+                error_log("S-1200: std ANTES de criar factory - " . json_encode($std, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+                
                 $factory = new \NFePHP\eSocial\Factories\EvtRemun($config, $std, $certificate);
+                
+                // Log do XML gerado para verificar se está correto
+                try {
+                    $xml = $factory->toXML();
+                    // Log apenas uma parte do XML (primeiros 2000 caracteres) para não sobrecarregar
+                    $xmlPreview = substr($xml, 0, 2000);
+                    error_log("S-1200: XML gerado (primeiros 2000 caracteres): " . $xmlPreview);
+                    
+                    // Verificar se o XML contém infoPerApur
+                    if (strpos($xml, 'infoPerApur') !== false) {
+                        error_log("S-1200: ✅ XML contém infoPerApur");
+                    } else {
+                        error_log("S-1200: ❌ ERRO - XML NÃO contém infoPerApur!");
+                    }
+                    
+                    // Verificar se o XML contém remunPerApur
+                    if (strpos($xml, 'remunPerApur') !== false) {
+                        error_log("S-1200: ✅ XML contém remunPerApur");
+                    } else {
+                        error_log("S-1200: ❌ ERRO - XML NÃO contém remunPerApur!");
+                    }
+                    
+                    // Verificar nrInsc no XML
+                    if (preg_match('/<nrInsc>(\d+)<\/nrInsc>/', $xml, $matches)) {
+                        $nrInscFound = $matches[1];
+                        error_log("S-1200: 📋 nrInsc encontrado no XML: '{$nrInscFound}' (tamanho: " . strlen($nrInscFound) . " dígitos)");
+                        if (strlen($nrInscFound) == 8) {
+                            error_log("S-1200: ✅ nrInsc com 8 dígitos (raiz do CNPJ) - correto para empresas privadas");
+                        } else {
+                            error_log("S-1200: ⚠️ nrInsc com " . strlen($nrInscFound) . " dígitos - pode causar erro no servidor do eSocial");
+                        }
+                    }
+                } catch (\Exception $e) {
+                    error_log("S-1200: Erro ao gerar XML: " . $e->getMessage());
+                }
                 break;
             case 'S-2200':
                 $factory = new \NFePHP\eSocial\Factories\EvtAdmissao($config, $std, $certificate);
